@@ -14,6 +14,11 @@
         "https://*.chatgpt.com/*",
         "https://*.claude.ai/*",
         "https://*.gemini.google.com/*",
+        "https://*.perplexity.ai/*",
+        "https://poe.com/*",
+        "https://www.meta.ai/*",
+        "https://x.com/*",
+        "https://github.com/*",
         "https://huggingface.co/*",
         "https://cdn.jsdelivr.net/*"
     ],
@@ -30,7 +35,13 @@
             "matches": [
                 "https://*.chatgpt.com/*",
                 "https://*.claude.ai/*",
-                "https://*.gemini.google.com/*"
+                "https://*.gemini.google.com/*",
+                "https://*.perplexity.ai/*",
+                "https://poe.com/*",
+                "https://www.meta.ai/*",
+                "https://x.com/i/grok*",
+                "https://github.com/copilot*",
+                "https://huggingface.co/chat/*"
             ],
             "js": [
                 "content.js"

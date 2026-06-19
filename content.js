@@ -35,7 +35,7 @@ function findInputElement(sendButton = null) {
             if (input) return input;
         }
     }
-    
+
     const active = document.activeElement;
     if (active && (active.tagName === 'TEXTAREA' || active.getAttribute('contenteditable') === 'true' || active.closest('[contenteditable="true"]'))) {
         return active.closest('[contenteditable="true"]') || active;
@@ -57,21 +57,41 @@ function findInputElement(sendButton = null) {
 function setElementText(element, text) {
     if (!element) return;
     element.focus();
-    if (element.tagName === 'TEXTAREA' || element.tagName === 'INPUT') {
-        element.select();
-        document.execCommand('insertText', false, text);
-    } else {
-        const selection = window.getSelection();
-        const range = document.createRange();
-        range.selectNodeContents(element);
-        selection.removeAllRanges();
-        selection.addRange(range);
-        document.execCommand('insertText', false, text);
+
+    let success = false;
+    try {
+        if (element.tagName === 'TEXTAREA' || element.tagName === 'INPUT') {
+            element.select();
+        } else {
+            // For contenteditable, use selectAll to select all text inside the focused editor
+            document.execCommand('selectAll', false, null);
+        }
+        success = document.execCommand('insertText', false, text);
+    } catch (e) {
+        console.error("LeakShield AI: execCommand failed:", e);
     }
-    
-    // Dispatch input event as a fallback
-    const inputEvent = new Event('input', { bubbles: true });
-    element.dispatchEvent(inputEvent);
+
+    if (!success) {
+        console.warn("LeakShield AI: execCommand failed, falling back to manual DOM updates.");
+        if (element.tagName === 'TEXTAREA' || element.tagName === 'INPUT') {
+            const proto = element.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+            const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+            if (descriptor && descriptor.set) {
+                descriptor.set.call(element, text);
+            } else {
+                element.value = text;
+            }
+            element.dispatchEvent(new Event('input', { bubbles: true }));
+            element.dispatchEvent(new Event('change', { bubbles: true }));
+        } else {
+            // Fallback for contenteditable
+            element.textContent = text;
+            const events = ['input', 'change', 'blur'];
+            events.forEach(type => {
+                element.dispatchEvent(new Event(type, { bubbles: true }));
+            });
+        }
+    }
 }
 
 function getActiveText(element = null) {
@@ -139,8 +159,29 @@ document.addEventListener('click', (event) => {
 
 async function performScanAndHandle(text, originalEvent, eventTarget) {
     console.log("LeakShield AI: Starting background scan for prompt:", text);
+
+    let isIntentSafe = true;
+    let intentResponse = null;
+
+    try {
+        updateRealtimeBadge('intent-scanning');
+        intentResponse = await chrome.runtime.sendMessage({ type: "CHECK_INTENT", text: text });
+        if (intentResponse && intentResponse.isJailbreak) {
+            isIntentSafe = false;
+        }
+    } catch (err) {
+        console.error("LeakShield AI: Intent scan failed:", err);
+    }
+
+    if (!isIntentSafe) {
+        console.log("LeakShield AI: Jailbreak/Malicious Intent detected!", intentResponse);
+        showSafetyWarningModal(intentResponse.label, intentResponse.score, originalEvent, eventTarget);
+        return;
+    }
+
     let response;
     try {
+        updateRealtimeBadge('scanning');
         // Race background script scan with a 2.5-second client-side timeout in case service worker is unresponsive
         response = await Promise.race([
             chrome.runtime.sendMessage({ type: "CHECK_PROMPT", text: text }),
@@ -195,6 +236,107 @@ async function performScanAndHandle(text, originalEvent, eventTarget) {
     }
 }
 
+function showSafetyWarningModal(label, score, originalEvent, eventTarget) {
+    const existingContainer = document.getElementById('leakshield-container');
+    if (existingContainer) {
+        if (typeof existingContainer.cleanup === 'function') existingContainer.cleanup();
+        existingContainer.remove();
+    }
+
+    const container = document.createElement('div');
+    container.id = "leakshield-container";
+    container.style.position = 'fixed';
+    container.style.top = '0';
+    container.style.left = '0';
+    container.style.width = '100%';
+    container.style.height = '100%';
+    container.style.pointerEvents = 'none';
+    container.style.zIndex = '2147483647';
+
+    const shadow = container.attachShadow({ mode: 'closed' });
+
+    const modal = document.createElement('div');
+    modal.innerHTML = `
+        <style>
+            @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap');
+            #leakshield-warning {
+                position: fixed;
+                z-index: 2147483647;
+                width: 360px;
+                background: linear-gradient(135deg, rgba(30, 0, 0, 0.95) 0%, rgba(15, 0, 0, 0.98) 100%);
+                backdrop-filter: blur(12px);
+                border: 1px solid rgba(239, 68, 68, 0.8);
+                border-radius: 16px;
+                padding: 20px;
+                box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.8), 0 0 25px rgba(239, 68, 68, 0.4);
+                font-family: 'Outfit', sans-serif;
+                color: #f8fafc;
+                display: flex;
+                flex-direction: column;
+                box-sizing: border-box;
+                pointer-events: auto;
+            }
+            .ls-title {
+                font-size: 16px;
+                font-weight: 700;
+                margin: 0 0 10px 0;
+                color: #ef4444;
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+            .ls-text {
+                font-size: 13.5px;
+                line-height: 1.5;
+                color: #cbd5e1;
+                margin: 0 0 16px 0;
+            }
+            .ls-text strong { color: #fca5a5; font-weight: 600; }
+            .ls-actions { display: flex; flex-direction: column; gap: 8px; }
+            .ls-actions button {
+                padding: 10px 16px;
+                border-radius: 8px;
+                font-weight: 600;
+                font-size: 13.5px;
+                cursor: pointer;
+                border: none;
+            }
+            #ls-cancel { background: linear-gradient(90deg, #ef4444 0%, #b91c1c 100%); color: #ffffff; }
+            #ls-proceed { background: transparent; color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.2); }
+        </style>
+        <div id="leakshield-warning">
+            <h2 class="ls-title">🛡️ Safety Warning: Malicious Intent</h2>
+            <p class="ls-text">We detected a potential <strong>${label}</strong> attack (Confidence: ${Math.round(score * 100)}%).</p>
+            <div class="ls-actions">
+                <button id="ls-cancel">Stop & Edit</button>
+                <button id="ls-proceed">Send anyway</button>
+            </div>
+        </div>
+    `;
+    shadow.appendChild(modal);
+    document.body.appendChild(container);
+
+    const warningBox = shadow.querySelector('#leakshield-warning');
+    const boxWidth = 360;
+    const boxHeight = 220;
+    warningBox.style.left = `${(window.innerWidth - boxWidth) / 2}px`;
+    warningBox.style.top = `${(window.innerHeight - boxHeight) / 2}px`;
+
+    shadow.querySelector('#ls-cancel').onclick = () => container.remove();
+    shadow.querySelector('#ls-proceed').onclick = () => {
+        container.remove();
+        isBypassing = true;
+        try {
+            if (originalEvent.type === 'click') eventTarget.click();
+            else if (originalEvent.type === 'keydown') {
+                const sendBtn = findSendButton();
+                if (sendBtn) sendBtn.click();
+                else eventTarget.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+            }
+        } finally { isBypassing = false; }
+    };
+}
+
 function showWarningModal(violations, aiEntities, originalEvent, eventTarget) {
     // Remove existing container if any
     const existingContainer = document.getElementById('leakshield-container');
@@ -216,7 +358,7 @@ function showWarningModal(violations, aiEntities, originalEvent, eventTarget) {
     container.style.pointerEvents = 'none';
     container.style.zIndex = '2147483647';
     container.style.visibility = 'hidden';
-    
+
     // Attach Shadow DOM for encapsulation
     const shadow = container.attachShadow({ mode: 'closed' });
 
@@ -329,6 +471,19 @@ function showWarningModal(violations, aiEntities, originalEvent, eventTarget) {
                 border-color: rgba(239, 68, 68, 0.3);
             }
 
+            #ls-mark-safe {
+                background: transparent;
+                color: #fbbf24;
+                border: 1px solid rgba(251, 191, 36, 0.2);
+                font-weight: 500;
+            }
+
+            #ls-mark-safe:hover {
+                color: #f59e0b;
+                background: rgba(251, 191, 36, 0.05);
+                border-color: rgba(251, 191, 36, 0.3);
+            }
+
             #leakshield-warning::after {
                 content: "";
                 position: absolute;
@@ -415,6 +570,7 @@ function showWarningModal(violations, aiEntities, originalEvent, eventTarget) {
             <div class="ls-actions">
                 <button id="ls-redact">Auto-Redact & Send</button>
                 <button id="ls-cancel">Stop & Edit</button>
+                <button id="ls-mark-safe">Mark as Safe (False Positive)</button>
                 <button id="ls-proceed">Send anyway</button>
             </div>
         </div>
@@ -509,9 +665,18 @@ function showWarningModal(violations, aiEntities, originalEvent, eventTarget) {
 
     shadow.querySelector('#ls-cancel').onclick = () => removeContainer();
 
+    shadow.querySelector('#ls-mark-safe').onclick = () => {
+        const inputArea = getActiveInputElement(eventTarget);
+        if (inputArea) {
+            const text = getActiveText(inputArea);
+            chrome.runtime.sendMessage({ type: "MARK_FALSE_POSITIVE", text: text });
+        }
+        removeContainer();
+    };
+
     shadow.querySelector('#ls-proceed').onclick = () => {
         removeContainer();
-        
+
         // Trigger bypass and re-dispatch
         try {
             isBypassing = true;
@@ -546,7 +711,7 @@ function showWarningModal(violations, aiEntities, originalEvent, eventTarget) {
         }
     };
 
-    shadow.querySelector('#ls-redact').onclick = () => {
+    shadow.querySelector('#ls-redact').onclick = async () => {
         const finalInput = getActiveInputElement(eventTarget);
         if (!finalInput) {
             removeContainer();
@@ -556,53 +721,366 @@ function showWarningModal(violations, aiEntities, originalEvent, eventTarget) {
         const originalText = getActiveText(finalInput);
         let newText = originalText;
 
+        const replaceWithToken = async (match) => {
+            try {
+                const response = await chrome.runtime.sendMessage({ type: "STORE_TOKEN", rawText: match });
+                chrome.runtime.sendMessage({ type: "LOG_LEAK", violationType: "Auto-Redacted Data" });
+                return response.token;
+            } catch (e) {
+                console.error("Token generation failed", e);
+                return "[REDACTED]";
+            }
+        };
+
+        const asyncReplace = async (str, regex) => {
+            const promises = [];
+            str.replace(regex, (match) => {
+                promises.push(replaceWithToken(match));
+                return match;
+            });
+            if (promises.length === 0) return str;
+            const replacements = await Promise.all(promises);
+            return str.replace(regex, () => replacements.shift());
+        };
+
         // Redact standard categories
-        newText = newText.replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, "[EMAIL_REDACTED]");
-        newText = newText.replace(/(\+\d{1,2}\s?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/g, "[PHONE_REDACTED]");
-        newText = newText.replace(/(?:sk-|key-|auth-)[a-zA-Z0-9]{24,}/gi, "[API_KEY_REDACTED]");
-        newText = newText.replace(/\b(?:\d[ -]*?){13,16}\b/g, "[CREDIT_CARD_REDACTED]");
-        newText = newText.replace(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g, "[IP_REDACTED]");
+        newText = await asyncReplace(newText, /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g);
+        newText = await asyncReplace(newText, /(\+\d{1,2}\s?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/g);
+        newText = await asyncReplace(newText, /(?:sk-|key-|auth-)[a-zA-Z0-9]{24,}/gi);
+        newText = await asyncReplace(newText, /\b(?:\d[ -]*?){13,16}\b/g);
+        newText = await asyncReplace(newText, /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g);
 
         // Redact custom keywords/secrets parsed from violations
-        violations.forEach(v => {
+        for (const v of violations) {
             const secretMatch = v.match(/Company Secret \(([^)]+)\)/) || v.match(/Internal Project: (.*)/);
             if (secretMatch) {
                 const secretVal = secretMatch[1];
                 const escaped = secretVal.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-                newText = newText.replace(new RegExp(escaped, 'gi'), "[CONFIDENTIAL_REDACTED]");
+                newText = await asyncReplace(newText, new RegExp(escaped, 'gi'));
             }
-        });
+        }
 
-        // Redact AI-detected entity words (from token classification)
-        aiEntities.forEach(entity => {
+        // Redact AI-detected entity words
+        for (const entity of aiEntities) {
             if (entity.word) {
                 const escaped = entity.word.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-                const cleanLabel = entity.type.toUpperCase() + "_REDACTED";
-                newText = newText.replace(new RegExp(escaped, 'gi'), `[${cleanLabel}]`);
+                newText = await asyncReplace(newText, new RegExp(escaped, 'gi'));
             }
-        });
+        }
+
+        // Remove the modal container first so focus can return to the main window cleanly
+        removeContainer();
 
         // Inject cleaned text using document.execCommand to sync with React/Lexical editor state
         setElementText(finalInput, newText);
 
-        removeContainer();
+        // Trigger send button automatically with isBypassing = true after a short delay to let React/Lexical sync state
+        setTimeout(() => {
+            try {
+                isBypassing = true;
+                const sendButton = findSendButton();
+                if (sendButton) {
+                    sendButton.click();
+                } else {
+                    const form = finalInput.closest('form');
+                    if (form) {
+                        form.requestSubmit();
+                    } else {
+                        const bypassEvent = new KeyboardEvent('keydown', {
+                            key: 'Enter',
+                            code: 'Enter',
+                            keyCode: 13,
+                            which: 13,
+                            bubbles: true,
+                            cancelable: true,
+                            view: window
+                        });
+                        finalInput.dispatchEvent(bypassEvent);
+                    }
+                }
+            } catch (e) {
+                console.error("LeakShield AI: Error during redacted submit:", e);
+            } finally {
+                isBypassing = false;
+            }
+        }, 100);
+    };
+}
 
-        // Trigger send button automatically with isBypassing = true
-        try {
-            isBypassing = true;
-            const sendButton = findSendButton();
-            if (sendButton) {
-                sendButton.click();
-            } else {
-                const form = finalInput.closest('form');
-                if (form) {
-                    form.requestSubmit();
+// ==========================================
+// REAL-TIME SCANNING, BADGE & HEATMAP (XAI)
+// ==========================================
+let debounceTimer;
+let realtimeBadge = null;
+let heatmapOverlay = null;
+
+function updateRealtimeBadge(status, score = null) {
+    if (!realtimeBadge) {
+        realtimeBadge = document.createElement('div');
+        realtimeBadge.id = 'ls-realtime-badge';
+        realtimeBadge.style.position = 'absolute';
+        realtimeBadge.style.zIndex = '9999';
+        realtimeBadge.style.height = '20px';
+        realtimeBadge.style.minWidth = '20px';
+        realtimeBadge.style.borderRadius = '10px';
+        realtimeBadge.style.transition = 'all 0.3s';
+        realtimeBadge.style.boxShadow = '0 2px 6px rgba(0,0,0,0.25)';
+        realtimeBadge.style.display = 'flex';
+        realtimeBadge.style.alignItems = 'center';
+        realtimeBadge.style.justifyContent = 'center';
+        realtimeBadge.style.color = '#fff';
+        realtimeBadge.style.fontSize = '11px';
+        realtimeBadge.style.fontWeight = 'bold';
+        realtimeBadge.style.fontFamily = 'sans-serif';
+        realtimeBadge.style.padding = '0 6px';
+        realtimeBadge.style.boxSizing = 'border-box';
+        document.body.appendChild(realtimeBadge);
+    }
+
+    const input = findInputElement();
+    if (input) {
+        const rect = input.getBoundingClientRect();
+        realtimeBadge.style.top = `${rect.top + window.scrollY + 10}px`;
+        realtimeBadge.style.left = `${rect.right + window.scrollX - 55}px`;
+        realtimeBadge.style.display = 'flex';
+    }
+
+    if (status === 'intent-scanning') {
+        realtimeBadge.style.backgroundColor = '#8b5cf6'; // Purple
+        realtimeBadge.textContent = '🛡️';
+    } else if (status === 'scanning') {
+        realtimeBadge.style.backgroundColor = '#fbbf24'; // Yellow
+        realtimeBadge.textContent = '...';
+    } else {
+        realtimeBadge.textContent = score !== null ? `${score}%` : '0%';
+        if (score >= 75) {
+            realtimeBadge.style.backgroundColor = '#ef4444'; // Red
+            realtimeBadge.style.boxShadow = '0 0 12px rgba(239, 68, 68, 0.6)';
+        } else if (score >= 30) {
+            realtimeBadge.style.backgroundColor = '#fbbf24'; // Yellow
+            realtimeBadge.style.boxShadow = '0 0 12px rgba(251, 191, 36, 0.6)';
+        } else {
+            realtimeBadge.style.backgroundColor = '#10b981'; // Green
+            realtimeBadge.style.boxShadow = '0 0 12px rgba(16, 185, 129, 0.4)';
+        }
+    }
+}
+
+function renderHeatmap(inputEl, aiEntities) {
+    if (!aiEntities || aiEntities.length === 0) {
+        if (heatmapOverlay) heatmapOverlay.style.display = 'none';
+        return;
+    }
+
+    if (!heatmapOverlay) {
+        heatmapOverlay = document.createElement('div');
+        heatmapOverlay.id = 'ls-heatmap-overlay';
+        heatmapOverlay.style.position = 'absolute';
+        heatmapOverlay.style.pointerEvents = 'none';
+        heatmapOverlay.style.zIndex = '9998';
+        heatmapOverlay.style.overflow = 'hidden';
+        document.body.appendChild(heatmapOverlay);
+    }
+
+    heatmapOverlay.style.display = 'block';
+
+    // Sync geometry
+    const rect = inputEl.getBoundingClientRect();
+    const style = window.getComputedStyle(inputEl);
+
+    heatmapOverlay.style.top = `${rect.top + window.scrollY}px`;
+    heatmapOverlay.style.left = `${rect.left + window.scrollX}px`;
+    heatmapOverlay.style.width = `${rect.width}px`;
+    heatmapOverlay.style.height = `${rect.height}px`;
+
+    // Fallback/Typography syncing
+    if (inputEl.tagName === 'TEXTAREA' || inputEl.tagName === 'INPUT') {
+        heatmapOverlay.style.padding = style.padding;
+        heatmapOverlay.style.border = style.border;
+        heatmapOverlay.style.fontFamily = style.fontFamily;
+        heatmapOverlay.style.fontSize = style.fontSize;
+        heatmapOverlay.style.fontWeight = style.fontWeight;
+        heatmapOverlay.style.lineHeight = style.lineHeight;
+        heatmapOverlay.style.letterSpacing = style.letterSpacing;
+        heatmapOverlay.style.whiteSpace = 'pre-wrap';
+        heatmapOverlay.style.wordWrap = 'break-word';
+        heatmapOverlay.style.color = 'transparent';
+        heatmapOverlay.style.backgroundColor = 'transparent';
+
+        let text = inputEl.value;
+        aiEntities.forEach(entity => {
+            if (!entity.word) return;
+            const escaped = entity.word.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+            const regex = new RegExp(`(${escaped})`, 'gi');
+            const alpha = Math.max(0.15, entity.score);
+            text = text.replace(regex, `<mark style="background-color: transparent; color: transparent; background-image: linear-gradient(to right, rgba(239, 68, 68, ${alpha}) 50%, transparent 50%); background-position: bottom; background-size: 4px 2px; background-repeat: repeat-x;">$1</mark>`);
+        });
+        heatmapOverlay.innerHTML = text;
+    } else {
+        // For contenteditable, deep clone to preserve exact structure (like paragraphs in Lexical)
+        const clone = inputEl.cloneNode(true);
+        clone.style.position = 'static';
+        clone.style.margin = '0';
+        clone.style.backgroundColor = 'transparent';
+        clone.style.color = 'transparent';
+        clone.style.overflow = 'visible';
+
+        const allNodes = clone.querySelectorAll('*');
+        allNodes.forEach(n => {
+            if (n.style) {
+                n.style.color = 'transparent';
+                n.style.backgroundColor = 'transparent';
+                n.style.borderColor = 'transparent';
+            }
+        });
+
+        const wrapTextNodes = (node) => {
+            if (node.nodeType === Node.TEXT_NODE) {
+                let text = node.nodeValue;
+                let hasMatch = false;
+
+                aiEntities.forEach(entity => {
+                    if (!entity.word) return;
+                    const escaped = entity.word.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+                    const regex = new RegExp(`(${escaped})`, 'gi');
+                    if (regex.test(text)) {
+                        hasMatch = true;
+                        const alpha = Math.max(0.15, entity.score);
+                        text = text.replace(regex, `%%MARK_START_${alpha}%%$1%%MARK_END%%`);
+                    }
+                });
+
+                if (hasMatch) {
+                    const span = document.createElement('span');
+                    span.innerHTML = text
+                        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                        .replace(/%%MARK_START_([0-9.]+)%%/g, '<mark style="background-color: transparent; color: transparent; background-image: linear-gradient(to right, rgba(239, 68, 68, $1) 50%, transparent 50%); background-position: bottom; background-size: 4px 2px; background-repeat: repeat-x;">')
+                        .replace(/%%MARK_END%%/g, '</mark>');
+                    node.replaceWith(span);
+                }
+            } else if (node.nodeType === Node.ELEMENT_NODE) {
+                Array.from(node.childNodes).forEach(wrapTextNodes);
+            }
+        };
+
+        Array.from(clone.childNodes).forEach(wrapTextNodes);
+
+        heatmapOverlay.innerHTML = '';
+        heatmapOverlay.appendChild(clone);
+    }
+
+    heatmapOverlay.scrollTop = inputEl.scrollTop;
+    heatmapOverlay.scrollLeft = inputEl.scrollLeft;
+}
+
+document.addEventListener('input', (event) => {
+    if (isBypassing) return;
+    const target = event.target;
+    const inputEl = target.closest('[contenteditable="true"]') || target.closest('textarea') || (target.tagName === 'TEXTAREA' ? target : null);
+    if (!inputEl) return;
+
+    clearTimeout(debounceTimer);
+    updateRealtimeBadge('intent-scanning');
+
+    debounceTimer = setTimeout(async () => {
+        const text = getActiveText(inputEl);
+        if (text.length > 5) {
+            try {
+                // Pre-flight check
+                const intentResponse = await chrome.runtime.sendMessage({ type: "CHECK_INTENT", text: text });
+                if (intentResponse && intentResponse.isJailbreak) {
+                    updateRealtimeBadge('unsafe', intentResponse.score * 100);
+                    if (heatmapOverlay) heatmapOverlay.style.display = 'none';
+                    return;
+                }
+
+                updateRealtimeBadge('scanning');
+                const response = await chrome.runtime.sendMessage({ type: "CHECK_PROMPT", text: text });
+                updateRealtimeBadge(response.isSafe ? 'safe' : 'unsafe', response.riskScore);
+                renderHeatmap(inputEl, response.aiEntities);
+            } catch (err) {
+                updateRealtimeBadge('safe', 0);
+                if (heatmapOverlay) heatmapOverlay.style.display = 'none';
+            }
+        } else {
+            if (realtimeBadge) realtimeBadge.style.display = 'none';
+            if (heatmapOverlay) heatmapOverlay.style.display = 'none';
+        }
+    }, 500);
+}, true);
+
+// Keep heatmap scrolled with input
+document.addEventListener('scroll', (event) => {
+    if (heatmapOverlay && event.target && event.target.tagName &&
+        (event.target.tagName === 'TEXTAREA' || event.target.getAttribute('contenteditable') === 'true')) {
+        heatmapOverlay.scrollTop = event.target.scrollTop;
+        heatmapOverlay.scrollLeft = event.target.scrollLeft;
+    }
+}, true);
+
+// ==========================================
+// REVERSIBLE REDACTION: MUTATION OBSERVER
+// ==========================================
+const observer = new MutationObserver((mutations) => {
+    mutations.forEach((mutation) => {
+        if (mutation.type === 'characterData') {
+            checkAndReplaceToken(mutation.target);
+        } else if (mutation.type === 'childList') {
+            mutation.addedNodes.forEach(node => {
+                if (node.nodeType === Node.TEXT_NODE) {
+                    checkAndReplaceToken(node);
+                } else if (node.nodeType === Node.ELEMENT_NODE) {
+                    walkDOMAndReplaceTokens(node);
+                }
+            });
+        }
+    });
+});
+
+observer.observe(document.body, { childList: true, characterData: true, subtree: true });
+
+function walkDOMAndReplaceTokens(node) {
+    if (node.nodeType === Node.TEXT_NODE) {
+        checkAndReplaceToken(node);
+    } else if (node.nodeType === Node.ELEMENT_NODE) {
+        node.childNodes.forEach(walkDOMAndReplaceTokens);
+    }
+}
+
+async function checkAndReplaceToken(textNode) {
+    if (textNode.nodeValue && textNode.nodeValue.includes('{{L_VAULT_')) {
+        // Skip un-redacting if the text node is inside the prompt input area
+        const parent = textNode.parentElement;
+        if (parent) {
+            const isInput = parent.tagName === 'TEXTAREA' || 
+                            parent.tagName === 'INPUT' || 
+                            parent.isContentEditable || 
+                            (typeof parent.closest === 'function' && parent.closest('[contenteditable="true"]'));
+            if (isInput) return;
+        }
+
+        const regex = /\{\{L_VAULT_[A-Z0-9]+\}\}/g;
+        let match;
+        const matches = [];
+        while ((match = regex.exec(textNode.nodeValue)) !== null) {
+            matches.push(match[0]);
+        }
+
+        if (matches.length > 0) {
+            let newValue = textNode.nodeValue;
+            for (const token of matches) {
+                try {
+                    const response = await chrome.runtime.sendMessage({ type: "GET_TOKEN", token: token });
+                    if (response && response.rawText) {
+                        newValue = newValue.replace(token, response.rawText);
+                    }
+                } catch (e) {
+                    console.error("Failed to un-redact token:", e);
                 }
             }
-        } catch (e) {
-            console.error("LeakShield AI: Error during redacted submit:", e);
-        } finally {
-            isBypassing = false;
+            if (newValue !== textNode.nodeValue) {
+                textNode.nodeValue = newValue;
+            }
         }
-    };
+    }
 }

@@ -86,8 +86,32 @@
             </ul>
         </section>
 
+        <section id="analytics-section" class="section" style="display: none;">
+            <h2>Analytics Dashboard</h2>
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <span class="metric-value" id="total-scans">0</span>
+                    <span class="metric-label">Prompts</span>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-value text-success" id="leaks-prevented">0</span>
+                    <span class="metric-label">Blocked</span>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-value" id="avg-risk-score" style="color: #fbbf24;">0%</span>
+                    <span class="metric-label">Avg Risk</span>
+                </div>
+            </div>
+            <div class="history-log">
+                <h3>Recent Blocks</h3>
+                <ul id="leak-history-list" class="history-list">
+                    <!-- Dynamically populated -->
+                </ul>
+            </div>
+        </section>
+
         <footer>
-            <button id="view-logs">View Blocked Leaks</button>
+            <button id="view-logs">View Analytics</button>
         </footer>
     </div>
     <script src="popup.js"></script>

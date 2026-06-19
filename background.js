@@ -1,5 +1,7 @@
 import { SENSITIVE_PATTERNS, checkContext } from './utils/regex-detectors.js';
 import { pipeline, env } from './lib/transformers.js';
+import { checkKNNThreshold } from './utils/vector-math.js';
+import { JAILBREAK_LABELS } from './utils/jailbreak-labels.js';
 
 // Configure environment for browser extension environments
 env.allowRemoteModels = true; 
@@ -12,23 +14,71 @@ if (env.backends && env.backends.onnx && env.backends.onnx.wasm) {
 
 // AI Protection Model Controller (Singleton Pattern)
 class AIProtect {
-    static task = 'token-classification'; 
-    static model = 'Xenova/distilbert-base-uncased-finetuned-pii'; 
+    static models = {
+        'token-classification': 'Xenova/distilbert-base-uncased-finetuned-pii',
+        'feature-extraction': 'Xenova/all-MiniLM-L6-v2'
+    };
+    static instances = {};
+
+    static async getInstance(task, progressCallback) {
+        if (!this.instances[task]) {
+            this.instances[task] = pipeline(task, this.models[task], { 
+                progress_callback: progressCallback,
+                quantized: true // Enable 8-bit quantized model version
+            });
+        }
+        return this.instances[task];
+    }
+}
+
+// Jailbreak & Intent Detector
+class JailbreakDetector {
+    static task = 'zero-shot-classification';
+    static model = 'Xenova/distilbert-base-uncased-mnli';
     static instance = null;
 
     static async getInstance(progressCallback) {
         if (this.instance === null) {
-            this.instance = pipeline(this.task, this.model, { 
+            this.instance = pipeline(this.task, this.model, {
                 progress_callback: progressCallback,
-                quantized: true // Enable 8-bit quantized model version (~25MB)
+                quantized: true
             });
         }
         return this.instance;
     }
 }
 
+const intentCache = new Map();
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    if (request.type === "CHECK_PROMPT") {
+    if (request.type === "STORE_TOKEN") {
+        const token = `{{L_VAULT_${Math.random().toString(36).substring(2, 10).toUpperCase()}}}`;
+        chrome.storage.session.set({ [token]: request.rawText }).then(() => {
+            sendResponse({ token: token });
+        });
+        return true;
+    } else if (request.type === "GET_TOKEN") {
+        chrome.storage.session.get(request.token).then((data) => {
+            sendResponse({ rawText: data[request.token] });
+        });
+        return true;
+    } else if (request.type === "LOG_LEAK") {
+        chrome.storage.local.get(['leaksPrevented', 'leakHistory'], (data) => {
+            const prevented = (data.leaksPrevented || 0) + 1;
+            const history = data.leakHistory || [];
+            history.unshift({ type: request.violationType || "Unknown Leak", timestamp: Date.now() });
+            if (history.length > 50) history.pop(); // keep last 50
+            chrome.storage.local.set({ leaksPrevented: prevented, leakHistory: history });
+        });
+        sendResponse({ success: true });
+        return false;
+    } else if (request.type === "CHECK_PROMPT") {
+        // Analytics: increment totalScans
+        chrome.storage.local.get(['totalScans'], (data) => {
+            const scans = (data.totalScans || 0) + 1;
+            chrome.storage.local.set({ totalScans: scans });
+        });
+
         const timeoutPromise = new Promise((resolve) => {
             setTimeout(() => {
                 console.warn("Background scan timed out, failing open.");
@@ -43,13 +93,62 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 sendResponse({ isSafe: true, violations: [], aiEntities: [] });
             });
         return true; // Keeps the message channel open for async response
+    } else if (request.type === "MARK_FALSE_POSITIVE") {
+        (async () => {
+            try {
+                const extractor = await AIProtect.getInstance('feature-extraction', () => {});
+                const output = await extractor(request.text, { pooling: 'mean', normalize: true });
+                const embedding = Array.from(output.data);
+                
+                chrome.storage.local.get(['safeVectorStore'], (data) => {
+                    const store = data.safeVectorStore || [];
+                    store.push({ text: request.text, vector: embedding });
+                    chrome.storage.local.set({ safeVectorStore: store });
+                });
+                sendResponse({ success: true });
+            } catch (err) {
+                console.error("Failed to generate embedding for false positive:", err);
+                sendResponse({ success: false, error: err.toString() });
+            }
+        })();
+        return true;
+    } else if (request.type === "CHECK_INTENT") {
+        (async () => {
+            const text = request.text;
+            if (intentCache.has(text)) {
+                sendResponse(intentCache.get(text));
+                return;
+            }
+            try {
+                const classifier = await JailbreakDetector.getInstance(() => {});
+                const output = await classifier(text, JAILBREAK_LABELS);
+                const highestScore = output.scores[0];
+                const highestLabel = output.labels[0];
+                
+                const isJailbreak = highestLabel !== 'safe' && highestScore > 0.75;
+                const result = { isJailbreak, label: highestLabel, score: highestScore };
+                
+                // Keep cache size reasonable
+                if (intentCache.size > 100) {
+                    const firstKey = intentCache.keys().next().value;
+                    intentCache.delete(firstKey);
+                }
+                intentCache.set(text, result);
+                
+                sendResponse(result);
+            } catch (err) {
+                console.error("Jailbreak scan failed:", err);
+                sendResponse({ isJailbreak: false, label: 'error', score: 0 });
+            }
+        })();
+        return true;
     }
 });
 
 function mergeTokens(entities) {
     const merged = [];
     for (const entity of entities) {
-        if (entity.score < 0.85) continue;
+        if (entity.score < 0.30) continue;
 
         const baseType = entity.entity.split('-')[1] || entity.entity; // e.g. PER from B-PER
 
@@ -61,6 +160,7 @@ function mergeTokens(entities) {
             const word = entity.word.startsWith('##') ? entity.word.slice(2) : ' ' + entity.word;
             merged[merged.length - 1].word += word;
             merged[merged.length - 1].lastIndex = entity.index;
+            merged[merged.length - 1].score = Math.max(merged[merged.length - 1].score, entity.score);
         } else {
             merged.push({
                 type: mapEntityLabel(baseType),
@@ -76,7 +176,7 @@ function mergeTokens(entities) {
 
 async function runContextualCheck(text) {
     try {
-        const detector = await AIProtect.getInstance((data) => {
+        const detector = await AIProtect.getInstance('token-classification', (data) => {
             if (data.status === 'progress') {
                 console.log(`Loading LeakShield AI Model: ${data.progress.toFixed(2)}%`);
             }
@@ -117,47 +217,66 @@ async function analyzeText(text) {
     const violations = [];
     const aiEntities = [];
 
+    // Check KNN False Positives
+    try {
+        const extractor = await AIProtect.getInstance('feature-extraction', () => {});
+        const output = await extractor(text, { pooling: 'mean', normalize: true });
+        const embedding = Array.from(output.data);
+        const vectorData = await chrome.storage.local.get(['safeVectorStore']);
+        
+        if (checkKNNThreshold(embedding, vectorData.safeVectorStore, 0.85)) {
+            console.log("LeakShield AI: Flagged as Safe (False Positive Match)");
+            return { isSafe: true, riskScore: 0, violations: [], aiEntities: [] };
+        }
+    } catch (e) {
+        console.error("LeakShield AI: KNN Vector check failed:", e);
+    }
+
+    let nonRiskProb = 1.0;
+
+    const addRegexEntities = (regexSource, label) => {
+        const regex = new RegExp(regexSource, 'gi');
+        let match;
+        while ((match = regex.exec(text)) !== null) {
+            violations.push(label);
+            aiEntities.push({ type: label, word: match[0], score: 0.99 });
+            nonRiskProb *= (1 - 0.99);
+        }
+    };
+
     // 1. Run Regex Scans if toggled on
-    if (toggles.email && SENSITIVE_PATTERNS.EMAIL.test(text)) {
-        violations.push("Email Address");
-    }
-    if (toggles.phone && SENSITIVE_PATTERNS.PHONE.test(text)) {
-        violations.push("Phone Number");
-    }
-    if (toggles.api && SENSITIVE_PATTERNS.API_KEY.test(text)) {
-        violations.push("API Key");
-    }
-    if (toggles.card && SENSITIVE_PATTERNS.CREDIT_CARD.test(text)) {
-        violations.push("Credit Card");
-    }
-    if (toggles.ip && SENSITIVE_PATTERNS.IPV4.test(text)) {
-        violations.push("IP Address");
-    }
+    if (toggles.email) addRegexEntities(SENSITIVE_PATTERNS.EMAIL.source, "Email Address");
+    if (toggles.phone) addRegexEntities(SENSITIVE_PATTERNS.PHONE.source, "Phone Number");
+    if (toggles.api) addRegexEntities(SENSITIVE_PATTERNS.API_KEY.source, "API Key");
+    if (toggles.card) addRegexEntities(SENSITIVE_PATTERNS.CREDIT_CARD.source, "Credit Card");
+    if (toggles.ip) addRegexEntities(SENSITIVE_PATTERNS.IPV4.source, "IP Address");
 
     // 2. Run Secrets Scan if toggled on
     if (toggles.secrets) {
         // Built-in company secrets
         const defaultSecrets = ["Project Titan", "Internal Q4 Revenue", "Confidential Strategy"];
         defaultSecrets.forEach(secret => {
-            if (text.toLowerCase().includes(secret.toLowerCase())) {
+            const regex = new RegExp(secret.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'gi');
+            let match;
+            while ((match = regex.exec(text)) !== null) {
                 violations.push(`Company Secret (${secret})`);
+                aiEntities.push({ type: "Company Secret", word: match[0], score: 0.99 });
+                nonRiskProb *= (1 - 0.99);
             }
         });
 
         // User's custom keywords (fuzzy match checker)
-        const customViolations = checkContext(text, customKeywords);
-        customViolations.forEach(finding => {
-            violations.push(finding);
+        customKeywords.forEach(keyword => {
+            if (keyword) {
+                const regex = new RegExp(keyword.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'gi');
+                let match;
+                while ((match = regex.exec(text)) !== null) {
+                    violations.push(`Internal Project: ${keyword}`);
+                    aiEntities.push({ type: "Custom Keyword", word: match[0], score: 0.99 });
+                    nonRiskProb *= (1 - 0.99);
+                }
+            }
         });
-    }
-
-    // If regex or secrets check already found a violation, return immediately to bypass the slow AI loading.
-    if (violations.length > 0) {
-        return {
-            isSafe: false,
-            violations: violations,
-            aiEntities: aiEntities
-        };
     }
 
     // 3. Run Quantized Contextual AI Scan
@@ -166,23 +285,39 @@ async function analyzeText(text) {
         try {
             const findings = await runContextualCheck(text);
             findings.forEach(entity => {
-                violations.push(`${entity.type} (${entity.word})`);
-                aiEntities.push({ type: entity.type, word: entity.word });
+                // Skip if already caught by regex
+                const alreadyFound = aiEntities.some(e => e.word.toLowerCase() === entity.word.toLowerCase());
+                if (!alreadyFound) {
+                    violations.push(`${entity.type} (${entity.word})`);
+                    aiEntities.push({ type: entity.type, word: entity.word, score: entity.score });
+                    nonRiskProb *= (1 - entity.score);
+                }
             });
         } catch (e) {
             console.error("LeakShield AI: Contextual check failed:", e);
         }
     }
 
+    const riskScore = Math.round((1 - nonRiskProb) * 100);
+    const isSafe = riskScore < 75; // Set 75 as the threshold for hard blocking
+
+    // Log average risk score to local storage asynchronously
+    chrome.storage.local.get(['totalRiskScore', 'totalScans'], (data) => {
+        const totalScore = (data.totalRiskScore || 0) + riskScore;
+        const scans = (data.totalScans || 1); // Avoid division by zero
+        chrome.storage.local.set({ totalRiskScore: totalScore, averageRiskScore: Math.round(totalScore / scans) });
+    });
+
     return {
-        isSafe: violations.length === 0,
+        isSafe: isSafe,
+        riskScore: riskScore,
         violations: violations,
         aiEntities: aiEntities
     };
 }
 
 // "Leaky Site" Scanner (Governance)
-const KNOWN_SAFE_AI = ["chatgpt.com", "claude.ai", "gemini.google.com"];
+const KNOWN_SAFE_AI = ["chatgpt.com", "claude.ai", "gemini.google.com", "perplexity.ai", "poe.com", "meta.ai", "x.com", "github.com", "huggingface.co"];
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     if (changeInfo.status === 'complete' && tab.url) {

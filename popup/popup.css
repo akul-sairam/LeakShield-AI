@@ -309,3 +309,76 @@ footer button:active {
     from { opacity: 0; transform: scale(0.9); }
     to { opacity: 1; transform: scale(1); }
 }
+
+/* Analytics Dashboard */
+#analytics-section {
+    animation: fadeIn 0.3s ease-out;
+}
+
+.metrics-grid {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+.metric-card {
+    flex: 1;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--glass-border);
+    border-radius: 8px;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+
+.metric-value {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.metric-value.text-success {
+    color: var(--success-color);
+}
+
+.metric-label {
+    font-size: 10px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-top: 4px;
+}
+
+.history-log h3 {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin: 0 0 6px 0;
+}
+
+.history-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    max-height: 100px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.history-item {
+    font-size: 11px;
+    background: rgba(239, 68, 68, 0.1);
+    border-left: 2px solid var(--danger-color);
+    padding: 4px 8px;
+    border-radius: 0 4px 4px 0;
+    display: flex;
+    justify-content: space-between;
+}
+
+.history-item-time {
+    color: var(--text-secondary);
+    font-size: 9px;
+}

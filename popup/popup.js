@@ -107,7 +107,42 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // Logic for "View Logs" button
+    const analyticsSection = document.getElementById('analytics-section');
     viewLogsBtn.onclick = () => {
-        alert("View Blocked Leaks: No privacy leaks blocked in this session yet.");
+        if (analyticsSection.style.display === 'none') {
+            analyticsSection.style.display = 'block';
+            viewLogsBtn.textContent = 'Hide Analytics';
+            
+            // Load Analytics Data
+            chrome.storage.local.get(['totalScans', 'leaksPrevented', 'leakHistory', 'averageRiskScore'], (data) => {
+                document.getElementById('total-scans').textContent = data.totalScans || 0;
+                document.getElementById('leaks-prevented').textContent = data.leaksPrevented || 0;
+                
+                const avgScore = data.averageRiskScore || 0;
+                const scoreEl = document.getElementById('avg-risk-score');
+                scoreEl.textContent = `${avgScore}%`;
+                if (avgScore >= 75) scoreEl.style.color = '#ef4444';
+                else if (avgScore >= 30) scoreEl.style.color = '#fbbf24';
+                else scoreEl.style.color = '#10b981';
+                
+                const historyList = document.getElementById('leak-history-list');
+                historyList.innerHTML = '';
+                const history = data.leakHistory || [];
+                if (history.length === 0) {
+                    historyList.innerHTML = '<li class="history-item" style="background:transparent;border:none;color:#94a3b8">No leaks detected yet.</li>';
+                } else {
+                    history.forEach(item => {
+                        const li = document.createElement('li');
+                        li.className = 'history-item';
+                        const timeStr = new Date(item.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                        li.innerHTML = `<span>${item.type}</span><span class="history-item-time">${timeStr}</span>`;
+                        historyList.appendChild(li);
+                    });
+                }
+            });
+        } else {
+            analyticsSection.style.display = 'none';
+            viewLogsBtn.textContent = 'View Analytics';
+        }
     };
 });
