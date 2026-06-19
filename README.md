@@ -1,12 +1,12 @@
 # LeakShield AI 🛡️
 
-LeakShield AI is an AI-powered privacy guardian Chrome extension designed to monitor, intercept, and secure prompt submissions on popular AI portals (ChatGPT, Claude, and Gemini). It prevents accidental leaks of sensitive personal information (PII) or corporate secrets before they reach LLM servers.
+LeakShield AI is an AI-powered privacy guardian Chrome extension designed to monitor, intercept, and secure prompt submissions on popular AI portals (including ChatGPT, Claude, Gemini, Perplexity, Poe, Meta AI, Grok, GitHub Copilot, and Hugging Face Chat). It prevents accidental leaks of sensitive personal information (PII) or corporate secrets before they reach LLM servers.
 
 ---
 
 ## Key Features
 
-* **Real-time Interception**: Captures submit button clicks and Enter key triggers on ChatGPT, Claude, and Gemini.
+* **Real-time Interception**: Captures submit button clicks and Enter key triggers on ChatGPT, Claude, Gemini, Perplexity, Poe, Meta AI, Grok, GitHub Copilot, and Hugging Face Chat.
 * **Sensitive Data Scanner**: Scans prompts for:
   * Email Addresses
   * Phone Numbers
@@ -14,6 +14,7 @@ LeakShield AI is an AI-powered privacy guardian Chrome extension designed to mon
   * Credit Cards
   * IP Addresses
   * Custom Keywords & Company Secrets
+* **Local AI Jailbreak Detection**: Utilizes an ONNX WASM model running locally in the browser to detect prompt injections and jailbreak attempts without sending data to external servers.
 * **"Auto-Redact" Action**: Auto-masks sensitive terms in the prompt with redacted placeholders (e.g., `[EMAIL_REDACTED]`, `[CONFIDENTIAL_REDACTED]`) and submits the modified prompt securely.
 * **Shadow DOM Encapsulation**: Warning modals are rendered in a closed Shadow DOM to avoid styling conflicts or injection attempts by the host AI site.
 * **"Leaky Site" Scanner**: Displays a warning alert badge (`!`) on the extension icon if navigating to unverified AI tools.
@@ -65,7 +66,7 @@ To load the extension locally in developer mode:
 The `content.js` script attaches capture-phase keydown and click listeners to LLM input boxes and send buttons. By executing at the capture phase, it preempts site-native event handlers.
 
 ### Evaluation Phase
-When a submission is intercepted, the prompt text is sent to the background worker (`background.js`). The background worker queries user-configured settings from `chrome.storage.local` and matches the prompt against regular expressions in `regex-detectors.js` and custom keywords via `checkContext()`.
+When a submission is intercepted, the prompt text is sent to the background worker (`background.js`). The background worker queries user-configured settings from `chrome.storage.local`, matches the prompt against regular expressions in `regex-detectors.js` and custom keywords via `checkContext()`, and runs the prompt through a local ONNX zero-shot classification model (`JailbreakDetector`) to identify malicious intent or jailbreak attempts.
 
 ### Action Phase
 * **If safe**: The prompt is submitted normally.
