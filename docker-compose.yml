@@ -1,0 +1,77 @@
+version: '3.8'
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage:z
+    networks:
+      - leakshield-net
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: leakshield
+      POSTGRES_PASSWORD: leakshield_password
+      POSTGRES_DB: leakshield_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_storage:/var/lib/postgresql/data
+    networks:
+      - leakshield-net
+
+  leakshield-api:
+    build: 
+      context: ./backend
+    expose:
+      - "8000"
+    environment:
+      - QDRANT_HOST=qdrant
+      - DATABASE_URL=postgresql://leakshield:leakshield_password@db:5432/leakshield_db
+      - ADMIN_API_KEY=admin-secret-key
+      - SERVICE_API_KEY=service-secret-key
+    depends_on:
+      - qdrant
+  leakshield-frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_ADMIN_KEY=admin-secret-key
+    depends_on:
+      - leakshield-api
+    networks:
+      - leakshield-net
+
+  leakshield-gateway:
+    build:
+      context: ./gateway
+    ports:
+      - "8000:8080"
+    environment:
+      - INTERNAL_API_URL=http://leakshield-api:8000/api/v1
+      - SERVICE_API_KEY=service-secret-key
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    depends_on:
+      - leakshield-api
+      - qdrant
+    networks:
+      - leakshield-net
+
+volumes:
+  qdrant_storage:
+  postgres_storage:
+
+networks:
+  leakshield-net:
+    driver: bridge
