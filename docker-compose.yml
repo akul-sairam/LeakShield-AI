@@ -27,6 +27,8 @@ services:
   leakshield-api:
     build: 
       context: ./backend
+    ports:
+      - "8000:8000"
     expose:
       - "8000"
     environment:
@@ -36,6 +38,9 @@ services:
       - SERVICE_API_KEY=service-secret-key
     depends_on:
       - qdrant
+      - db
+    networks:
+      - leakshield-net
   leakshield-frontend:
     build:
       context: ./frontend
@@ -53,7 +58,7 @@ services:
     build:
       context: ./gateway
     ports:
-      - "8000:8080"
+      - "8080:8080"
     environment:
       - INTERNAL_API_URL=http://leakshield-api:8000/api/v1
       - SERVICE_API_KEY=service-secret-key

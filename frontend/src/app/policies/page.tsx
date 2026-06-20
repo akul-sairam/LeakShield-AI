@@ -39,6 +39,15 @@ export default function PoliciesPage() {
     }
   };
 
+  const handleDelete = async (id: number) => {
+    try {
+      await api.delete(`/policies/${id}`);
+      fetchPolicies();
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   return (
     <div className="space-y-6 max-w-6xl">
       <div className="flex items-center justify-between">
@@ -115,6 +124,9 @@ export default function PoliciesPage() {
                     {' • '}Action: <span className="font-medium text-red-400">{p.action.toUpperCase()}</span>
                   </p>
                 </div>
+                <button onClick={() => handleDelete(p.id)} className="p-2 text-gray-500 hover:text-red-400 hover:bg-red-400/10 rounded transition-colors" title="Delete Policy">
+                  <Trash2 className="w-4 h-4" />
+                </button>
               </div>
             ))}
             {policies.length === 0 && <p className="text-gray-500 text-sm">No policies defined.</p>}

@@ -45,6 +45,15 @@ async def get_policies(db: Session = Depends(get_db)):
     policies = db.query(Policy).all()
     return policies
 
+@router.delete("/policies/{policy_id}", summary="Delete a policy", dependencies=[Depends(get_current_user_admin)])
+async def delete_policy(policy_id: int, db: Session = Depends(get_db)):
+    policy = db.query(Policy).filter(Policy.id == policy_id).first()
+    if not policy:
+        raise HTTPException(status_code=404, detail="Policy not found")
+    db.delete(policy)
+    db.commit()
+    return {"detail": "Policy deleted"}
+
 @router.get("/analytics", summary="Get policy violation analytics", dependencies=[Depends(get_current_user_admin)])
 async def get_analytics(db: Session = Depends(get_db)):
     """Returns a summary of the leakiest departments."""
