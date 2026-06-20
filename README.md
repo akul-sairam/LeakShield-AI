@@ -30,6 +30,10 @@ LeakShield AI/
 ├── content.js               # Capture listeners, Shadow DOM UI, and redact logic
 ├── background.js            # Message router, storage coordinator, and site scanner
 ├── styles.css               # Deprecated styles (moved inside Shadow DOM)
+├── backend/                 # Python backend API (models, services, testing)
+├── frontend/                # Next.js web application frontend
+├── gateway/                 # API Gateway (Python, provider routing, caching)
+├── docker-compose.yml       # Docker orchestration for backend, frontend, and gateway
 ├── utils/
 │   └── regex-detectors.js   # RegEx patterns and context scanning matcher
 ├── popup/
@@ -57,6 +61,19 @@ To load the extension locally in developer mode:
 4. In the top-left corner, click the **"Load unpacked"** button.
 5. Select the project root folder (`LeakShield AI`).
 6. Pin **LeakShield AI** to your Chrome toolbar for easy settings access.
+
+---
+
+## Docker Setup (Backend, Frontend, Gateway)
+
+To run the full stack (Next.js frontend, Python backend API, and Gateway):
+
+1. Ensure Docker and Docker Compose are installed on your machine.
+2. Run the following command in the project root:
+   ```bash
+   docker-compose up --build
+   ```
+3. This will spin up the necessary microservices for LeakShield AI.
 
 ---
 
