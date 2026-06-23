@@ -7,16 +7,20 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recha
 
 export default function Dashboard() {
   const [logs, setLogs] = useState<any[]>([]);
-  const [analytics, setAnalytics] = useState<any[]>([]);
+  const [analytics, setAnalytics] = useState<any>({ top_violations: [], total_scans: 0, blocked_scans: 0 });
+  const [policiesCount, setPoliciesCount] = useState<number>(0);
+  const [health, setHealth] = useState<number>(0);
   
   useEffect(() => {
     // Fetch logs and analytics
     api.get('/audit-logs?limit=10').then(res => setLogs(res.data)).catch(console.error);
-    api.get('/analytics').then(res => setAnalytics(res.data.top_violations)).catch(console.error);
+    api.get('/analytics').then(res => setAnalytics(res.data)).catch(console.error);
+    api.get('/policies').then(res => setPoliciesCount(res.data.length)).catch(console.error);
+    api.get('/health').then(() => setHealth(100)).catch(() => setHealth(0));
   }, []);
 
-  const totalScans = logs.length * 10 + 42; // Fake multiplier for demo
-  const blocked = logs.filter(l => l.violated_policy_id).length;
+  const totalScans = analytics.total_scans;
+  const blocked = analytics.blocked_scans;
   
   return (
     <div className="space-y-6">
@@ -46,7 +50,7 @@ export default function Dashboard() {
           </div>
           <div>
             <p className="text-sm text-gray-400">Active Policies</p>
-            <p className="text-2xl font-bold text-white">12</p>
+            <p className="text-2xl font-bold text-white">{policiesCount}</p>
           </div>
         </div>
         <div className="bg-gray-900 border border-gray-800 p-6 rounded-xl flex items-center">
@@ -55,7 +59,7 @@ export default function Dashboard() {
           </div>
           <div>
             <p className="text-sm text-gray-400">System Health</p>
-            <p className="text-2xl font-bold text-white">99.9%</p>
+            <p className="text-2xl font-bold text-white">{health}%</p>
           </div>
         </div>
       </div>
@@ -66,7 +70,7 @@ export default function Dashboard() {
           <h2 className="text-lg font-semibold text-white mb-4">Risk Heatmap (Violations by Department)</h2>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={analytics}>
+              <BarChart data={analytics.top_violations}>
                 <XAxis dataKey="policy_name" stroke="#6b7280" />
                 <YAxis stroke="#6b7280" />
                 <Tooltip cursor={{fill: '#1f2937'}} contentStyle={{backgroundColor: '#111827', border: '1px solid #374151'}} />

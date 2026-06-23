@@ -76,4 +76,11 @@ async def get_analytics(db: Session = Depends(get_db)):
             "violations_count": count
         })
 
-    return {"top_violations": analytics}
+    total_scans = db.query(func.count(AuditLog.id)).scalar()
+    blocked_scans = db.query(func.count(AuditLog.id)).filter(AuditLog.violated_policy_id.isnot(None)).scalar()
+
+    return {
+        "top_violations": analytics,
+        "total_scans": total_scans or 0,
+        "blocked_scans": blocked_scans or 0
+    }

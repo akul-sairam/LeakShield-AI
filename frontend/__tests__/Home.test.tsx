@@ -14,7 +14,12 @@ jest.mock('recharts', () => ({
 // Mock API
 jest.mock('../src/lib/api', () => ({
   api: {
-    get: jest.fn().mockResolvedValue({ data: [] }),
+    get: jest.fn((url) => {
+      if (url.includes('/analytics')) {
+        return Promise.resolve({ data: { top_violations: [], total_scans: 0, blocked_scans: 0 } });
+      }
+      return Promise.resolve({ data: [] });
+    }),
   },
 }));
 
